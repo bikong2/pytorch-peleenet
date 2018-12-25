@@ -3,9 +3,14 @@ import torch.nn as nn
 import math
 import torch.nn.functional as F
 
+import tensorboardX
+import torch.onnx
+import torchvision
+from torch.autograd import Variable
+from tensorboardX import SummaryWriter
 
 class Conv_bn_relu(nn.Module):
-    def __init__(self, inp, oup, kernel_size=3, stride=1, pad=1,use_relu = True):
+    def __init__(self, inp, oup, kernel_size=3, stride=1, pad=1, use_relu = True):
         super(Conv_bn_relu, self).__init__()
         self.use_relu = use_relu
         if self.use_relu:
@@ -27,20 +32,19 @@ class Conv_bn_relu(nn.Module):
 
 
 class StemBlock(nn.Module):
-    def __init__(self, inp=3,num_init_features=32):
+    def __init__(self, inp=3, num_init_features=32):
         super(StemBlock, self).__init__()
-
 
 
         self.stem_1 = Conv_bn_relu(inp, num_init_features, 3, 2, 1)
 
-        self.stem_2a = Conv_bn_relu(num_init_features,int(num_init_features/2),1,1,0)
+        self.stem_2a = Conv_bn_relu(num_init_features, int(num_init_features/2), 1, 1, 0)
 
         self.stem_2b = Conv_bn_relu(int(num_init_features/2), num_init_features, 3, 2, 1)
 
-        self.stem_2p = nn.MaxPool2d(kernel_size=2,stride=2)
+        self.stem_2p = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.stem_3 = Conv_bn_relu(num_init_features*2,num_init_features,1,1,0)
+        self.stem_3 = Conv_bn_relu(num_init_features*2, num_init_features, 1, 1, 0)
 
 
 
@@ -52,21 +56,21 @@ class StemBlock(nn.Module):
 
         stem_2p_out = self.stem_2p(stem_1_out)
 
-        out = self.stem_3(torch.cat((stem_2b_out,stem_2p_out),1))
+        out = self.stem_3(torch.cat((stem_2b_out, stem_2p_out), 1))
 
         return out
 
 
 class DenseBlock(nn.Module):
-    def __init__(self, inp,inter_channel,growth_rate):
+    def __init__(self, inp, inter_channel, growth_rate):
         super(DenseBlock, self).__init__()
 
-        self.cb1_a = Conv_bn_relu(inp,inter_channel,1,1,0)
-        self.cb1_b = Conv_bn_relu(inter_channel,growth_rate,3,1,1)
+        self.cb1_a = Conv_bn_relu(inp, inter_channel, 1, 1, 0)
+        self.cb1_b = Conv_bn_relu(inter_channel, growth_rate, 3, 1, 1)
 
-        self.cb2_a = Conv_bn_relu(inp,inter_channel,1,1,0)
-        self.cb2_b = Conv_bn_relu(inter_channel,growth_rate,3,1,1)
-        self.cb2_c = Conv_bn_relu(growth_rate,growth_rate,3,1,1)
+        self.cb2_a = Conv_bn_relu(inp, inter_channel, 1, 1, 0)
+        self.cb2_b = Conv_bn_relu(inter_channel, growth_rate, 3, 1, 1)
+        self.cb2_c = Conv_bn_relu(growth_rate, growth_rate, 3, 1, 1)
 
 
     def forward(self, x):
@@ -77,19 +81,19 @@ class DenseBlock(nn.Module):
         cb2_b_out = self.cb2_b(cb2_a_out)
         cb2_c_out = self.cb2_c(cb2_b_out)
 
-        out = torch.cat((x,cb1_b_out,cb2_c_out),1)
+        out = torch.cat((x, cb1_b_out, cb2_c_out), 1)
 
         return out
 
 
 class TransitionBlock(nn.Module):
-    def __init__(self, inp, oup,with_pooling= True):
+    def __init__(self, inp, oup, with_pooling=True):
         super(TransitionBlock, self).__init__()
         if with_pooling:
-            self.tb = nn.Sequential(Conv_bn_relu(inp,oup,1,1,0),
-                                    nn.AvgPool2d(kernel_size=2,stride=2))
+            self.tb = nn.Sequential(Conv_bn_relu(inp, oup, 1, 1, 0),
+                                    nn.AvgPool2d(kernel_size=2, stride=2))
         else:
-            self.tb = Conv_bn_relu(inp,oup,1,1,0)
+            self.tb = Conv_bn_relu(inp,oup, 1, 1, 0)
 
     def forward(self, x):
         out = self.tb(x)
@@ -97,7 +101,7 @@ class TransitionBlock(nn.Module):
 
 
 class PeleeNet(nn.Module):
-    def __init__(self,num_classes=1000, num_init_features=32,growthRate=32, nDenseBlocks = [3,4,8,6], bottleneck_width=[1,2,4,4]):
+    def __init__(self, num_classes=1000, num_init_features=32, growthRate=32, nDenseBlocks=[3,4,8,6], bottleneck_width=[1,2,4,4]):
         super(PeleeNet, self).__init__()
 
 
@@ -105,16 +109,16 @@ class PeleeNet(nn.Module):
         self.num_classes = num_classes
         self.num_init_features = num_init_features
 
-        inter_channel =list()
-        total_filter =list()
+        inter_channel = list()
+        total_filter = list()
         dense_inp = list()
 
-        self.half_growth_rate = int(growthRate / 2)
+        self.half_growth_rate = int(growthRate/2)
         
         # building stemblock
-        self.stage.add_module('stage_0', StemBlock(3,num_init_features))
+        self.stage.add_module('stage_0', StemBlock(3, num_init_features))
 
-        #
+        # stage1_4
         for i, b_w in enumerate(bottleneck_width):
 
             inter_channel.append(int(self.half_growth_rate * b_w / 4) * 4)
@@ -132,8 +136,8 @@ class PeleeNet(nn.Module):
                 with_pooling = True
 
         # building middle stageblock
-            self.stage.add_module('stage_{}'.format(i+1),self._make_dense_transition(dense_inp[i], total_filter[i],
-                                                                                     inter_channel[i],nDenseBlocks[i],with_pooling=with_pooling))
+            self.stage.add_module('stage_{}'.format(i+1), self._make_dense_transition(dense_inp[i], total_filter[i],
+                                                                                      inter_channel[i], nDenseBlocks[i], with_pooling=with_pooling))
             
         
         # building classifier
@@ -145,15 +149,15 @@ class PeleeNet(nn.Module):
         self._initialize_weights()
 
 
-    def _make_dense_transition(self, dense_inp,total_filter, inter_channel, ndenseblocks,with_pooling= True):
+    def _make_dense_transition(self, dense_inp, total_filter, inter_channel, ndenseblocks, with_pooling=True):
         layers = []
 
         for i in range(ndenseblocks):
-            layers.append(DenseBlock(dense_inp, inter_channel,self.half_growth_rate))
+            layers.append(DenseBlock(dense_inp, inter_channel, self.half_growth_rate))
             dense_inp += self.half_growth_rate * 2
 
         #Transition Layer without Compression
-        layers.append(TransitionBlock(dense_inp,total_filter,with_pooling))
+        layers.append(TransitionBlock(dense_inp, total_filter, with_pooling))
 
         return nn.Sequential(*layers)
 
@@ -162,10 +166,10 @@ class PeleeNet(nn.Module):
         x = self.stage(x)
 
         # global average pooling layer
-        x = F.avg_pool2d(x,kernel_size=7)
+        x = F.avg_pool2d(x, kernel_size=7)
         x = x.view(x.size(0), -1)
         x = self.classifier(x)
-        out = F.log_softmax(x,dim=1)
+        out = F.log_softmax(x, dim=1)
 
         return out
 
@@ -188,25 +192,16 @@ class PeleeNet(nn.Module):
 
 if __name__ == '__main__':
     p = PeleeNet(num_classes=1000)
-    input = torch.autograd.Variable(torch.ones(1, 3, 224, 224))
+    #input = torch.autograd.Variable(torch.ones(1, 3, 224, 224))
+    input = torch.autograd.Variable(torch.ones(1, 3, 304, 304))
     output = p(input)
-
     print(output.size())
 
-    # torch.save(p.state_dict(), 'peleenet.pth.tar')
+    #torch.save(p.state_dict(), 'peleenet.pth')
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    #input_data = Variable(torch.rand(16, 3, 224, 224))
+    #net = torchvision.models.resnet18()
+    #writer = SummaryWriter(log_dir="./log", comment="resnet18")
+    writer = SummaryWriter(log_dir="./log", comment="PeleeNet")
+    with writer: writer.add_graph(p, (input,))
 

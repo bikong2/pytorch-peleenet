@@ -7,7 +7,7 @@ modified from [in Caffe](https://github.com/Robert-JunWang/Pelee/blob/master/pel
 
 
 ## Contact
-pfw813@gmail.com
+lixihua9@126.com
 
 Any discussions or concerns are welcomed!
 
